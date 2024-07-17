@@ -415,6 +415,7 @@ impl<'a> CSSInliner<'a> {
         if let Some(css) = css {
             raw_styles.push_str(css);
         }
+        raw_styles = raw_styles.replace("\"", "'");
         let mut styles = IndexMap::with_capacity_and_hasher(128, BuildNoHashHasher::default());
         let mut parse_input = cssparser::ParserInput::new(&raw_styles);
         let mut parser = cssparser::Parser::new(&mut parse_input);
@@ -426,9 +427,9 @@ impl<'a> CSSInliner<'a> {
         )]
         let mut declarations = Vec::with_capacity(
             ((raw_styles.len() as f64 / DECLARATION_SIZE_COEFFICIENT)
-                .min(usize::MAX as f64)
-                .round() as usize)
-                .max(16),
+            .min(usize::MAX as f64)
+            .round() as usize)
+            .max(16),
         );
         let mut rule_list = Vec::with_capacity(declarations.capacity() / 3);
         for rule in cssparser::StyleSheetParser::new(

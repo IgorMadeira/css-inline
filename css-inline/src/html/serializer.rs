@@ -2,10 +2,10 @@ use super::{
     attributes::Attributes,
     document::Document,
     node::{ElementData, NodeData, NodeId},
-    DocumentStyleMap, InliningMode,
+    DocumentStyleMap, InliningMode
 };
 use crate::{html::ElementStyleMap, parser, InlineError};
-use html5ever::{local_name, namespace_url, ns, tendril::StrTendril, LocalName, QualName};
+use html5ever::{local_name, namespace_url, ns, tendril::StrTendril, Attribute, LocalName, QualName};
 use smallvec::{smallvec, SmallVec};
 use std::io::Write;
 
@@ -111,8 +111,14 @@ impl<'a> Sink<'a> {
                 } else {
                     Some(self.node)
                 };
-
-                serializer.start_elem(&element.name, &element.attributes, style_node_id)?;
+                
+                serializer.start_elem(
+                    &self.document, 
+                    &self.node, 
+                    &element.name, 
+                    &element.attributes, 
+                    style_node_id
+                )?;
 
                 self.serialize_children(serializer)?;
 
@@ -214,6 +220,8 @@ impl<'a, W: Write> HtmlSerializer<'a, W> {
 
     fn start_elem(
         &mut self,
+        document: &Document, 
+        node_id: &NodeId,
         name: &QualName,
         attrs: &Attributes,
         style_node_id: Option<NodeId>,
@@ -222,7 +230,7 @@ impl<'a, W: Write> HtmlSerializer<'a, W> {
             ns!(html) => Some(name.local.clone()),
             _ => None,
         };
-
+        
         if self.parent().ignore_children {
             self.stack.push(ElemInfo {
                 html_name,
@@ -247,6 +255,7 @@ impl<'a, W: Write> HtmlSerializer<'a, W> {
             self.writer.write_all(class.value.as_bytes())?;
             self.writer.write_all(b"\"")?;
         }
+
         for attr in &attrs.attributes {
             self.writer.write_all(b" ")?;
 
@@ -267,16 +276,22 @@ impl<'a, W: Write> HtmlSerializer<'a, W> {
             self.writer.write_all(attr.name.local.as_bytes())?;
             self.writer.write_all(b"=\"")?;
             if attr.name.local.as_bytes() == b"style" {
+
                 if let Some(new_styles) = &styles {
+
+                    let attrs = self.setup_new_styles(attr, document, *node_id);
+                    let new_value = StrTendril::from(attrs);
+
                     merge_styles(
                         &mut self.writer,
-                        &attr.value,
+                        &new_value,
                         new_styles,
                         &mut self.style_buffer,
                     )?;
                     styles = None;
                 } else {
-                    self.write_attributes(&attr.value)?;
+                    let attrs = self.setup_new_styles(attr, document, *node_id);
+                    self.write_attributes(&attrs)?;
                 }
             } else {
                 self.write_attributes(&attr.value)?;
@@ -286,7 +301,8 @@ impl<'a, W: Write> HtmlSerializer<'a, W> {
         if let Some(styles) = &styles {
             self.writer.write_all(b" style=\"")?;
             for (property, (_, value)) in styles {
-                write_declaration(&mut self.writer, property, value)?;
+                self.find_parent_style_and_write_declaration(property, *value, 
+                    document, *node_id)?;
                 self.writer.write_all(b";")?;
             }
             self.writer.write_all(b"\"")?;
@@ -470,6 +486,7 @@ fn merge_styles<Wr: Write>(
     for (idx, declaration) in current_declarations.enumerate() {
         parsed_declarations_count = parsed_declarations_count.saturating_add(1);
         let (property, value) = declaration?;
+
         let estimated_declaration_size = property
             .len()
             .saturating_add(STYLE_SEPARATOR.len())
@@ -491,6 +508,7 @@ fn merge_styles<Wr: Write>(
     // Next, we iterate over the new styles and merge them into our existing set
     // New rules will not override old ones unless they are marked as `!important`
     for (property, (_, value)) in new_styles {
+
         match (
             value.strip_suffix("!important"),
             declarations_buffer
@@ -656,4 +674,169 @@ mod tests {
         .expect("Should not fail");
         assert_eq!(buffer, b"<!DOCTYPE html><html><head></head><body data-foo=\"&amp; &nbsp; &quot;\"></body></html>");
     }
+}
+
+
+trait InlineInherit<'a> {
+    /**
+     * Creates a string with all inline style attributes
+     * Will look up for parent styles to inherit
+     * ie: style="color: inherit; font-size: 12px; ..." -> style="color: red; font-size: 12px; ..."
+     */
+    fn setup_new_styles(self: &mut Self,
+        attr: &Attribute,
+        document: &Document,
+        node_id: NodeId) -> String;
+
+        /**
+         * Tries to find a style to inherit in parent elements
+         * ie: font-family: inherit; -> font-family: 'Times New Roman';
+         * @returns the new attribute value or the same value if no parent style was found
+         */
+        fn find_parent_style<'b>(self: &'b Self,
+        property: &str, 
+        value: &'b str, 
+        document: &'b Document, 
+        node_id: NodeId) -> &'b str;
+
+        fn find_parent_style_and_write_declaration<'b>(self: &'b mut Self,
+        property: &str, 
+        value: &'b str, 
+        document: &'b Document, 
+        node_id: NodeId) -> Result<(), InlineError>;
+}
+
+impl<'a, W:Write> InlineInherit<'a> for HtmlSerializer<'a, W> {
+    fn setup_new_styles(self: &mut Self,
+        attr: &Attribute,
+        document: &Document,
+        node_id: NodeId) -> String {
+            if self.styles.get(&node_id).is_none() {
+                return attr.value.to_string();
+            }
+            let attr = self.styles.get(&node_id).unwrap();
+            let mut attr_vec = vec![];
+            for (property, (specificity, value)) in attr {
+                if value.trim() == "inherit" {
+                    let new_value = self.find_parent_style(property, value, document, node_id);
+                    attr_vec.push((property, (specificity, new_value)));
+                } else {
+                    attr_vec.push((property, (specificity, value)));
+                }
+            };
+
+            let attrs = attr_vec.iter().map(|(property, (_, value))| {
+                format!("{}: {}", property, value.replace("\"", "\'"))
+            }).collect::<Vec<String>>().join("; ");
+
+            return attrs;
+        }
+    
+        fn find_parent_style<'b>(self: &'b Self,
+            property: &str, 
+            value: &'b str, 
+            document: &'b Document, 
+            node_id: NodeId) -> &'b str {
+            if value.trim() != "inherit" {
+                return value;
+            }
+    
+            let mut parent_node_id = document[node_id].parent;
+    
+            while parent_node_id.is_some() {
+                let parent_id = match parent_node_id {
+                    Some(id) => id,
+                    None => return value,
+                };
+    
+                let parent_style_value = match self.styles.get(&parent_id) {
+                    Some(styles) => match styles.get(property) {
+                        Some(style) => style.1,
+                        None => value,
+                    },
+                    None => value,
+                };
+                
+                if parent_style_value.trim() != "inherit" {
+                    return parent_style_value
+                }
+                
+                match &document[parent_id].as_element() {
+                    Some(parent) => {
+                        match parent.attributes.get(local_name!("style")) {
+                            Some(value) => {
+                                let attrs = value.trim().split(';');
+                                for attr in attrs {
+                                    let mut parts = attr.split(':');
+                                    let parent_property = parts.next().unwrap_or("").trim();
+                                    let parent_value = parts.next().unwrap_or("").trim();
+                                    if property == parent_property && parent_value.trim() != "inherit" {
+                                        return parent_value;
+                                    };
+                                }
+                            },
+                            None => {},
+                        }
+                    },
+                    _ => {},
+                }
+                parent_node_id = document[parent_id].parent;
+            }
+            return value;
+        }
+
+           fn find_parent_style_and_write_declaration<'b>(self: &'b mut Self,
+            property: &str, 
+            value: &'b str, 
+            document: &'b Document, 
+            node_id: NodeId) -> Result<(), InlineError> {
+            if value.trim() != "inherit" {
+                return write_declaration(&mut self.writer, property, value)
+            }
+    
+            let mut parent_node_id = document[node_id].parent;
+    
+            while parent_node_id.is_some() {
+                let parent_id = match parent_node_id {
+                    Some(id) => id,
+                    None => {
+                        return write_declaration(&mut self.writer, property, value)
+                    },
+                };
+    
+                let parent_style_value = match self.styles.get(&parent_id) {
+                    Some(styles) => match styles.get(property) {
+                        Some(style) => style.1,
+                        None => value,
+                    },
+                    None => value,
+                };
+                
+                if parent_style_value.trim() != "inherit" {
+                    return write_declaration(&mut self.writer, property, value)
+                }
+                
+                match &document[parent_id].as_element() {
+                    Some(parent) => {
+                        match parent.attributes.get(local_name!("style")) {
+                            Some(value) => {
+                                let attrs = value.trim().split(';');
+                                for attr in attrs {
+                                    let mut parts = attr.split(':');
+                                    let parent_property = parts.next().unwrap_or("").trim();
+                                    let parent_value = parts.next().unwrap_or("").trim();
+                                    if property == parent_property && parent_value.trim() != "inherit" {
+                                        return write_declaration(&mut self.writer, property, parent_value)
+                                    };
+                                }
+                            },
+                            None => {},
+                        }
+                    },
+                    _ => {},
+                }
+                parent_node_id = document[parent_id].parent;
+            }
+            return write_declaration(&mut self.writer, property, value)
+        }
 }
