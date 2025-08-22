@@ -289,8 +289,9 @@ impl Document {
         keep_style_tags: bool,
         keep_link_tags: bool,
         mode: InliningMode,
+        should_skip_element_options: Option<&Vec<(&str, &str)>>,
     ) -> Result<(), InlineError> {
-        serialize_to(self, writer, styles, keep_style_tags, keep_link_tags, mode)
+        serialize_to(self, writer, styles, keep_style_tags, keep_link_tags, mode, should_skip_element_options)
     }
 
     /// Filter this node iterator to elements matching the given selectors.
@@ -348,6 +349,7 @@ mod tests {
                 false,
                 false,
                 InliningMode::Document,
+                None,
             )
             .expect("Failed to serialize");
         buffer

@@ -78,6 +78,10 @@ pub struct InlineOptions<'a> {
     pub preallocate_node_capacity: usize,
     /// A way to resolve stylesheets from various sources.
     pub resolver: Arc<dyn StylesheetResolver>,
+    /// Options to determine which elements should be skipped during serialization based on their styles.
+    /// Key/value are css style key, value.
+    /// [`html::serializer::serialize_to`]
+    pub should_skip_element_options: Option<&'a Vec<(&'a str, &'a str)>>,
 }
 
 impl<'a> std::fmt::Debug for InlineOptions<'a> {
@@ -190,6 +194,7 @@ impl Default for InlineOptions<'_> {
             extra_css: None,
             preallocate_node_capacity: 32,
             resolver: Arc::new(DefaultStylesheetResolver),
+            should_skip_element_options: None,
         }
     }
 }
@@ -475,12 +480,14 @@ impl<'a> CSSInliner<'a> {
                 // Which means that they will fall into this category and will be ignored
             }
         }
+
         document.serialize(
             target,
             styles,
             self.options.keep_style_tags,
             self.options.keep_link_tags,
             mode,
+            self.options.should_skip_element_options,
         )?;
         Ok(())
     }

@@ -5,7 +5,7 @@ mod iter;
 pub(crate) mod node;
 mod parser;
 mod selectors;
-mod serializer;
+pub(crate) mod serializer;
 
 pub(crate) use self::selectors::Specificity;
 use crate::hasher::BuildNoHashHasher;

@@ -157,6 +157,8 @@ OPTIONS:
             extra_css: args.extra_css.as_deref().map(Cow::Borrowed),
             preallocate_node_capacity: 32,
             resolver: Arc::new(DefaultStylesheetResolver),
+            should_skip_element_options: None,
+            
         };
         let inliner = CSSInliner::new(options);
         if args.files.is_empty() {

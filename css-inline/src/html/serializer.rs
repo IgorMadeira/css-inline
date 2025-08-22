@@ -16,6 +16,7 @@ pub(crate) fn serialize_to<W: Write>(
     keep_style_tags: bool,
     keep_link_tags: bool,
     mode: InliningMode,
+    should_skip_element_options: Option<&Vec<(&str, &str)>>
 ) -> Result<(), InlineError> {
     let sink = Sink::new(
         document,
@@ -23,7 +24,9 @@ pub(crate) fn serialize_to<W: Write>(
         keep_style_tags,
         keep_link_tags,
         mode,
-    );
+    )
+    .set_should_skip_element_options(should_skip_element_options);
+
     let mut ser = HtmlSerializer::new(writer, styles);
     sink.serialize(&mut ser)
 }
@@ -35,9 +38,16 @@ struct Sink<'a> {
     keep_style_tags: bool,
     keep_link_tags: bool,
     inlining_mode: InliningMode,
+    should_skip_element_options: Option<&'a Vec<(&'a str, &'a str)>>,
 }
 
 impl<'a> Sink<'a> {
+    #[inline]
+    pub(crate) fn set_should_skip_element_options(mut self, options: Option<&'a Vec<(&'a str, &'a str)>>) -> Self {
+        self.should_skip_element_options = options;
+        self
+    }
+
     fn new(
         document: &'a Document,
         node: NodeId,
@@ -51,6 +61,7 @@ impl<'a> Sink<'a> {
             keep_style_tags,
             keep_link_tags,
             inlining_mode,
+            should_skip_element_options: None,
         }
     }
     #[inline]
@@ -62,6 +73,7 @@ impl<'a> Sink<'a> {
             self.keep_link_tags,
             self.inlining_mode,
         )
+        .set_should_skip_element_options(self.should_skip_element_options)
     }
     #[inline]
     fn data(&self) -> &NodeData {
@@ -69,6 +81,24 @@ impl<'a> Sink<'a> {
     }
     #[inline]
     fn should_skip_element(&self, element: &ElementData) -> bool {
+        
+        if let Some(options) = self.should_skip_element_options {
+            // let styles = element.attributes.get(local_name!("style")).unwrap();
+            if let Some(styles) = element.attributes.get(local_name!("style")) {
+                for (key, value) in options {
+                    if styles.split(';').any(|decl| {
+                        let mut parts = decl.splitn(2, ':');
+                        let k = parts.next().unwrap_or("").trim();
+                        let v = parts.next().unwrap_or("").trim();
+                        k.eq_ignore_ascii_case(key) &&
+                            v.to_ascii_lowercase().contains(&value.to_ascii_lowercase())
+                    }) {
+                        return true;
+                    }
+                } 
+            }
+        }
+
         if element.name.local == local_name!("style") {
             !self.keep_style_tags
                 && element.attributes.get("data-css-inline".into()) != Some("keep")
@@ -609,6 +639,7 @@ mod tests {
             true,
             false,
             InliningMode::Document,
+            None,
         )
         .expect("Should not fail");
         assert_eq!(buffer, b"<html><head><style>h1 { color:blue; }</style><style>h1 { color:red }</style></head><body></body></html>");
@@ -628,6 +659,7 @@ mod tests {
             false,
             false,
             InliningMode::Document,
+            None,
         )
         .expect("Should not fail");
         assert_eq!(buffer, b"<html><head></head><body></body></html>");
@@ -647,6 +679,7 @@ mod tests {
             false,
             false,
             InliningMode::Document,
+            None,
         )
         .expect("Should not fail");
         assert_eq!(buffer, b"<!DOCTYPE html><html><head><title>&amp; &lt; &gt; &nbsp;</title></head><body></body></html>");
@@ -666,6 +699,7 @@ mod tests {
             false,
             false,
             InliningMode::Document,
+            None,
         )
         .expect("Should not fail");
         assert_eq!(
@@ -688,6 +722,7 @@ mod tests {
             false,
             false,
             InliningMode::Document,
+            None,
         )
         .expect("Should not fail");
         assert_eq!(buffer, b"<!DOCTYPE html><html><head></head><body data-foo=\"&amp; &nbsp; &quot;\"></body></html>");
